@@ -1,13 +1,13 @@
 # Grapher and GraphQL Schema Directives
 
-Wouldn't it be sweet if we could setup our collections and links in our GraphQL type definitions?
+Wouldn't it be sweet if we could setup our role-based security in GraphQL type definitions?
 
 Yes, it would be very sweet.
 
 ## Install
 
 ```
-meteor add cultofcoders:grapher-schema-directives
+meteor add mattblackdev:roles-schema-directives
 ```
 
 ## Sample
@@ -15,59 +15,42 @@ meteor add cultofcoders:grapher-schema-directives
 Where you define your types:
 
 ```js
-type User @mongo(name: "users") {
-    comments: [Comment] @link(to: "user")
+type Post {
+  content: String
+  history: [Post] @allow(roles: ["admin"])
 }
 
-type Comment @mongo(name: "comments") {
-   user: User @link(field: "userId")
-   post: Post @link(field: "commentId")
-   createdAt: Date @map("created_at")
-}
-
-type Post @mongo(name: "posts") {
-    comments: [Comment] @link(to="post")
+type Mutation {
+  addPost(content: String): ID @deny(groups: ['banned'])
 }
 ```
 
-In the background, the schema directives analyze our types and create propper links, when we have a `field` present,
-that's going to be a main link, that's the collection we are going to store it in, when we have `to` present,
-that's going to be an inversed link.
-
-Direct fields are automatically indexed by default.
-
-Each `ObjectType` needs to have the propper `@mongo` directive to work.
-
-The `@map` directive makes a database field be aliased. The reason for this is that when we query with Grapher's
-GraphQL abilities to properly adapt that field to the correspondant db field. In the backscene, we basically have a `reducer`.
+In the background, the schema directives analyze our types and wrap the resolvers with the popular alanning:roles package. The wrapped resolver will check userIsInRole() with the roles and groups arguments provided to the directive.
 
 ## Usage
 
 ```js
 import {
-  directives, // the full map of the directive, as mentioned in the sample above
+  directives, // the full map of the directives: { allow, deny }
   directiveDefinitions, // the definitions
-  MapToDirective, // the actual directive classes
-  LinkDirective,
-  MongoDirective,
-} from 'meteor/cultofcoders:grapher-schema-directives';
+  AllowDirective, // the actual directive classes
+  DenyDirective,
+} from 'meteor/mattblackdev:roles-schema-directives'
 
 // Add them to your graphql servers
 ```
 
-If you are using `cultofcoders:apollo` package, this is done by default, you don't have to care about it.
-
-This is a very quick way to setup your schema, however if you need to use denormalisation abilities, and you don't want
-to give up the sugary directives above:
+This is currently designed to work with the `cultofcoders:apollo` package, and you can add the directives to the initilization like this:
 
 ```js
-import { db } from 'meteor/cultofcoders:grapher';
+import { initialize } from 'meteor/cultofcoders:apollo'
+import { directives as rolesDirectives } from 'meteor/mattblackdev:roles-schema-directives'
 
 Meteor.startup(() => {
-  const userCommentLinker = db.users.getLinker('comments');
-  Object.assign(userCommentLinker.linkConfig, {
-    denormalize: {},
-  });
-  userCommentLinker._initDenormalization();
-});
+  initialize({
+    GRAPHQL_SCHEMA_DIRECTIVES: {
+      ...rolesDirectives,
+    },
+  })
+})
 ```
