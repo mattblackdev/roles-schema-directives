@@ -1,6 +1,6 @@
-# Grapher and GraphQL Schema Directives
+# Resolver-generating allow/deny Schema Directives
 
-Wouldn't it be sweet if we could setup our role-based security in GraphQL type definitions?
+Wouldn't it be sweet if we could setup our role-based security in GraphQL type and field definitions?
 
 Yes, it would be very sweet.
 
