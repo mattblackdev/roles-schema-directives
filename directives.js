@@ -28,7 +28,7 @@ class RolesDirective extends SchemaDirectiveVisitor {
   visitObject(objectType) {
     const { roles, group } = this.args
     if (!roles && !group) throwInvalidArgs({ roles, group })
-    objectType[this.name] = { roles, group }
+    objectType[`_${this.name}`] = { roles, group }
     this.ensureFieldsWrapped(objectType)
   }
   // Visitor methods for nested types like fields and arguments
@@ -37,7 +37,7 @@ class RolesDirective extends SchemaDirectiveVisitor {
   visitFieldDefinition(field, details) {
     const { roles, group } = this.args
     if (!roles && !group) throwInvalidArgs({ roles, group })
-    field[this.name] = { roles, group } = this.args
+    field[`_${this.name}`] = { roles, group }
     this.ensureFieldsWrapped(details.objectType)
   }
 
@@ -58,7 +58,8 @@ class RolesDirective extends SchemaDirectiveVisitor {
 
         // Get the required role from the field first, falling back
         // to the objectType if no role is required by the field:
-        const { roles, group } = field[this.name] || objectType[this.name]
+        const { roles, group } =
+          field[`_${this.name}`] || objectType[`_${this.name}`]
 
         const userIsInRole = Roles.userIsInRole(userId, roles, group)
         const notAuthorized =
