@@ -41,10 +41,143 @@ class RolesDirective extends SchemaDirectiveVisitor {
     this.ensureFieldsWrapped(details.objectType)
   }
 
+  visitInputFieldDefinition(field, { objectType }) {
+    /**
+     * Basically the way this works is:
+     * 1. For the given InputField on an InputType, find the mutations that use it
+     * 2. Then store the field name and allow/deny directive info on the mutation field
+     * 3. Wrap the mutation resolver with the permissions check
+     *
+     * Also, there are 2 optimizations at play:
+     * 1. Only wrap the mutation resolver once
+     * 2. Only check the unique set of permissions
+     */
+    const { roles, group } = this.args
+    if (!roles && !group) throwInvalidArgs({ roles, group })
+
+    const typeName = objectType.name
+    const { schema } = this
+    const PROTECTED_INPUTS_KEY = `_allowDenyInputs`
+    const WRAPPED_KEY = `_allowDenyWrapped`
+
+    // find mutations using this InputType
+    const mutations = getMutationsWithArgType(schema, typeName)
+
+    // store the directive meta on each mutation
+    mutations.forEach(mutation => {
+      mutation[PROTECTED_INPUTS_KEY] = this.mergeProtectedFields(
+        mutation[PROTECTED_INPUTS_KEY],
+        field.name,
+        this.name,
+        this.args
+      )
+
+      // Ensure mutaion resolver is only wrapped once
+      if (mutation[WRAPPED_KEY]) return
+      mutation[WRAPPED_KEY] = true
+
+      const { resolve = defaultFieldResolver } = mutation
+      mutation.resolve = (...args) => {
+        // Get all protected fields in the input argument
+        const { input } = args[1]
+        const protectedFields = Object.keys(input).filter(inputKey => {
+          return mutation[PROTECTED_INPUTS_KEY].hasOwnProperty(inputKey)
+        })
+
+        // If there aren't any, move along...
+        if (!protectedFields.length) {
+          return resolve.apply(this, args)
+        }
+
+        // make sure there is a user
+        const context = args[2]
+        const userId = context.userId
+        if (!userId) throwNotAuthorized()
+
+        // To avoid repeating the same permission checks we need only the unique permissions
+        const permissionsToCheck = this.getUniquePermissionsToCheck(
+          mutation[PROTECTED_INPUTS_KEY],
+          protectedFields
+        )
+
+        // For each unique permission, check it
+        const { allow, deny } = permissionsToCheck
+        if (allow) {
+          allow.forEach(({ roles, group }) => {
+            // White list
+            if (!Roles.userIsInRole(userId, roles, group)) {
+              throwNotAuthorized()
+            }
+          })
+        }
+        if (deny) {
+          deny.forEach(({ roles, group }) => {
+            // Black list
+            if (Roles.userIsInRole(userId, roles, group)) {
+              throwNotAuthorized()
+            }
+          })
+        }
+
+        return resolve.apply(this, args)
+      }
+    })
+  }
+
+  /**
+   * Returns a new object with the merged protected fields
+   * @param {*} source Object to merge
+   * @param {string} fieldName
+   * @param {POLARITY} polarity
+   * @param {*} args
+   */
+  mergeProtectedFields(source, fieldName, polarity, args) {
+    // Considering these properties may or may not exist yet,
+    // this is the structure we want:
+    // mutation = {
+    //   [STATE_KEY]: {
+    //     secretField: {
+    //       deny: {
+    //         roles: ['user']
+    //       }
+    //     }
+    //   }
+    // }
+    if (!source) {
+      return { [fieldName]: { [polarity]: { ...args } } }
+    } else {
+      return {
+        ...source,
+        [fieldName]: {
+          ...source[fieldName],
+          [polarity]: { ...args },
+        },
+      }
+    }
+  }
+
+  getUniquePermissionsToCheck(permissions, inputs) {
+    const allowSet = new Set()
+    const denySet = new Set()
+
+    inputs.forEach(input => {
+      const { allow, deny } = permissions[input]
+      if (allow) allowSet.add(JSON.stringify(allow))
+      if (deny) denySet.add(JSON.stringify(deny))
+    })
+
+    return {
+      allow: allowSet.size ? [...allowSet].map(JSON.parse) : undefined,
+      deny: denySet.size ? [...denySet].map(JSON.parse) : undefined,
+    }
+  }
+
   ensureFieldsWrapped(objectType) {
+    const stateKey = `_${this.name}`
+    const sentinelKey = `_${this.name}FieldsWrapped`
     // Mark the object to avoid re-wrapping:
-    if (objectType[`${this.name}FieldsWrapped`]) return
-    objectType[`${this.name}FieldsWrapped`] = true
+    if (objectType[sentinelKey]) return
+    objectType[sentinelKey] = true
 
     const fields = objectType.getFields()
 
@@ -52,14 +185,19 @@ class RolesDirective extends SchemaDirectiveVisitor {
       const field = fields[fieldName]
       const { resolve = defaultFieldResolver } = field
       field.resolve = (...args) => {
+        // Get the required role from the first match
+        // field first, or then the object or finally undefined
+        const { roles, group } = field[stateKey] || objectType[stateKey] || {}
+
+        // if there's no auth just move along...
+        if (!roles && !group) {
+          return resolve.apply(this, args)
+        }
+
+        // make sure there is a user
         const context = args[2]
         const userId = context.userId
         if (!userId) throwNotAuthorized()
-
-        // Get the required role from the field first, falling back
-        // to the objectType if no role is required by the field:
-        const { roles, group } =
-          field[`_${this.name}`] || objectType[`_${this.name}`]
 
         const userIsInRole = Roles.userIsInRole(userId, roles, group)
         const notAuthorized =
@@ -74,6 +212,21 @@ class RolesDirective extends SchemaDirectiveVisitor {
       }
     })
   }
+}
+
+/**
+ * Returns an array of mutations that have at least one argument of the given type
+ * @param {GraphQLSchema} schema
+ * @param {String} typeName
+ */
+function getMutationsWithArgType(schema, typeName) {
+  return Object.values(schema.getMutationType().getFields()).filter(
+    mutation => {
+      return mutation.args.some(arg => {
+        return arg.type.name === typeName
+      })
+    }
+  )
 }
 
 export class AllowDirective extends RolesDirective {}
